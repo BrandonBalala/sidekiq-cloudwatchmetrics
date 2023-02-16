@@ -459,26 +459,39 @@ RSpec.describe Sidekiq::CloudWatchMetrics do
         end
       end
 
-      it "publishes sidekiq metrics to cloudwatch for lots of queues in batches of 20" do
-        Timecop.freeze(now = Time.now) do
-          stats = instance_double(Sidekiq::Stats,
-            processed: 123,
-            failed: 456,
-            enqueued: 6,
-            scheduled_size: 1,
-            retry_size: 2,
-            dead_size: 3,
-            queues: 30.times.each_with_object({}) { |i, hash| hash["queue#{i}"] = i },
-            workers_size: 10,
-            processes_size: 5,
-            default_queue_latency: 1.23,
-          )
-          allow(Sidekiq::Stats).to receive(:new).and_return(stats)
+      context "with lots of queues" do
+        let(:queues) do
+          30.times.each_with_object({}) { |i, hash| hash["queue#{i}"] = i }
+        end
+
+        it "publishes sidekiq metrics in batches of 20" do
           allow(Sidekiq::Queue).to receive(:new).with(/queue\d/).and_return(double(latency: 1.23))
 
           publisher.publish
 
           expect(client).to have_received(:put_metric_data).exactly(4).times
+        end
+      end
+
+      context "when sidekiq api does not list any processes" do
+        let(:processes) { [] }
+
+        it "publishes zero utilization metrics" do
+          allow(Sidekiq::Queue).to receive(:new).with(/foo|bar|baz/).and_return(double(latency: 1.23))
+
+          publisher.publish
+
+          expect(client).to have_received(:put_metric_data).with(
+            namespace: "Sidekiq",
+            metric_data: include(
+              hash_including(
+                metric_name: "Utilization",
+                timestamp: now,
+                value: 0.0,
+                unit: "Percent",
+              ),
+            ),
+          )
         end
       end
     end
